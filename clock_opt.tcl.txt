@@ -1,0 +1,68 @@
+set_app_var mv_continue_on_opcond_mismatch true
+source /project/pdworkspace/pdlab83_wa/mj_wa/scripts/to_create_scenarios.tcl 	 
+mark_clock_tree -clock_synthesized -fix_sinks
+foreach scenario [all_active_scenarios] {
+     #remove_ideal_network [all_fanout -flat -clock_tree]
+        remove_ideal_network -all
+     propagate_all_clocks
+}
+
+set ICC_CTS_INTERCLOCK_BALANCING 0
+set DFT 0
+set ICC_CTS_UPDATE_LATENCY 0
+set ICC_CTS_SELF_GATING 0
+set clock_opt_cts_cmd "clock_opt -area_recovery -power -congestion"
+if {!$DFT && [get_scan_chain] == 0} {lappend clock_opt_cts_cmd -continue_on_missing_scandef}
+if {$ICC_CTS_INTERCLOCK_BALANCING && [file exists [which $ICC_CTS_INTERCLOCK_BALANCING_OPTIONS_FILE]]} {lappend clock_opt_cts_cmd -inter_clock_balance}
+if {$ICC_CTS_UPDATE_LATENCY} {lappend clock_opt_cts_cmd -update_clock_latency}
+if {$ICC_CTS_SELF_GATING} {lappend clock_opt_cts_cmd -insert_self_gating}
+echo $clock_opt_cts_cmd
+eval $clock_opt_cts_cmd
+
+if {[file exists [which $CUSTOM_CLOCK_OPT_CTS_POST_SCRIPT]]} {
+echo "RM-Info: Sourcing [which $CUSTOM_CLOCK_OPT_CTS_POST_SCRIPT]"
+source $CUSTOM_CLOCK_OPT_CTS_POST_SCRIPT
+}
+
+
+## When you want to do interclock delay balancing, you need to execute the following commands :
+#  set_inter_clock_delay_options -balance_group "Clk1 Clk2"
+#  clock_opt -inter_clock_balance
+
+
+## When you want to update the IO latency before you start the post CTS optimization, add :
+# set_latency_adjustment_options -from_clock  ....  -to_clock .... -latency ....
+# clock_opt -update_clock_latency -no_clock_route
+
+
+## checking whether the clock nets got the NDR
+# report_net_routing_rules [get_nets -hier *]
+
+
+
+########################################
+#           CONNECT P/G                #
+########################################
+## Connect Power & Ground for non-MV and MV-mode
+
+source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_post_cts_timing_settings.tcl
+set_active_scenarios $cur_active_scenarios
+  current_scenario $prects_cur_scenario
+
+set ICC_REPORTING_EFFORT MED
+catch {sh mkdir rpts/post_opt_cts}
+set REPORTS_DIR_CLOCK_OPT_CTS rpts/post_opt_cts
+if {$ICC_REPORTING_EFFORT == "MED" } {
+ redirect -file $REPORTS_DIR_CLOCK_OPT_CTS/setup_viols.rpt {report_timing -nosplit -scenario [all_active_scenarios] -capacitance -transition_time -input_pins -nets -delay max} 
+ redirect -file $REPORTS_DIR_CLOCK_OPT_CTS/hold_viols.rpt {report_timing -nosplit -scenario [all_active_scenarios] -capacitance -transition_time -input_pins -nets -delay min} 
+}
+if {$ICC_REPORTING_EFFORT == "MED" } {
+   redirect -tee -file $REPORTS_DIR_CLOCK_OPT_CTS/qor.rpt {report_qor}
+   redirect -tee -file $REPORTS_DIR_CLOCK_OPT_CTS/qor_summary.rpt -append {report_qor -summary}
+}
+
+if {$ICC_REPORTING_EFFORT != "OFF" } {
+   redirect -file $REPORTS_DIR_CLOCK_OPT_CTS/util.rpt {report_placement_utilization -verbose}
+   create_qor_snapshot -clock_tree -name qor_snap
+   redirect -file $REPORTS_DIR_CLOCK_OPT_CTS/qor_snap.rpt {report_qor_snapshot -no_display}
+}

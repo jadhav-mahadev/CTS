@@ -1,0 +1,81 @@
+set_app_var mv_continue_on_opcond_mismatch true
+
+set ICC_CTS_RULE_NAME iccrm_clock_double_spacing
+source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_optimization_settings_icc.tcl
+source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_placement_settings_icc.tcl
+source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_cts_settings_icc.tcl
+
+set_app_var cts_instance_name_prefix CTS
+
+remove_scenario -all
+create_scenario func_worst
+
+read_sdc /project/IC_Compiler_2013.03/ref/design_data/ORCA_TOP_func_worst.sdc
+set_tlu_plus_files \
+        -max_tluplus $TLUPLUS_MAX_FILE \
+        -tech2itf_map $MAP_FILE
+
+set_timing_derate -late 1.05
+
+set_scenario_options -setup true -hold false -leakage_power false
+set_operating_conditions ss0p95vn40c -analysis_type on_chip_variation
+
+ set cur_scenario [current_scenario]
+ current_scenario [lindex [get_scenarios -cts_mode true] 0]
+ current_scenario $cur_scenario 
+
+#define_routing_rule clk_rule -width {M3 0.112 M4 0.112 M5 0.112 M6 0.112} -spacings {M3 0.056 M4 0.056 M5 0.056 M6 0.056}
+#reset_clock_tree_references
+#set_clock_tree_reference -clock_trees [get_clocks *] -references "NBUFFX2_LVT NBUFFX4_LVT NBUFFX8_LVT INVX2_LVT INVX4_LVT INVX8_LVT" -sizing_only -delay_insertion_only
+set_clock_tree_options -clock_trees [get_clocks *] -target_skew 0.050 -routing_rule iccrm_clock_double_spacing -use_default_routing_for_sinks 1 -buffer_relocation TRUE -gate_sizing TRUE -buffer_sizing TRUE -gate_relocation TRUE -max_transition 1.100 -layer_list {M3 M4 M5 M6}  -max_fanout 30 -target_early_delay 0.500
+
+if {[file exists float_pin_exceptions.tcl]} {
+	source float_pin_exceptions.tcl
+}
+set clock_opt_cts_cmd "clock_opt -only_cts -no_clock_route"
+
+if {!$DFT && [get_scan_chain] == 0} {lappend clock_opt_cts_cmd -continue_on_missing_scandef}
+if {$ICC_CTS_INTERCLOCK_BALANCING && [file exists [which $ICC_CTS_INTERCLOCK_BALANCING_OPTIONS_FILE]]} {lappend clock_opt_cts_cmd -inter_clock_balance}
+if {$ICC_CTS_UPDATE_LATENCY} {lappend clock_opt_cts_cmd -update_clock_latency}
+if {$ICC_CTS_SELF_GATING} {lappend clock_opt_cts_cmd -insert_self_gating}
+set clock_opt_cts_cmd "clock_opt -only_cts -continue_on_missing_scandef -inter_clock_balance -update_clock_latency"
+echo $clock_opt_cts_cmd
+eval $clock_opt_cts_cmd
+
+source /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_post_cts_timing_settings.tcl
+
+catch {sh mkdir rpts/post_cts}
+#post cts reports
+report_clock_timing -nosplit -type skew > rpts/post_cts/clock_timing_skew.rpt
+report_clock_timing  -type latency -verbose > rpts/post_cts/clock_timing_latency.rpt
+report_clock_tree -nosplit -summary > rpts/post_cts/clock_summary.rpt
+report_clock_tree -structure > rpts/post_cts/clock_structure.rpt
+
+source /project/pdworkspace/pdlab83_wa/mj_wa/scripts/to_create_scenarios.tcl 
+
+foreach scenario [all_active_scenarios] {
+     #remove_ideal_network [all_fanout -flat -clock_tree]
+	remove_ideal_network -all
+     propagate_all_clocks
+}
+
+catch {sh mkdir rpts/pre_opt_cts}
+report_timing -nosplit -scenario [all_active_scenarios] -capacitance -transition_time -input_pins -nets -delay max > rpts/pre_opt_cts/setup_viols.rpt
+
+
+foreach scenario [all_active_scenarios] {
+     current_scenario $scenario
+     #set fix hold 
+     set_fix_hold [all_clocks]
+}
+
+set_active_scenarios [concat [get_scenarios -setup true] [get_scenarios -hold true]]
+
+report_timing -nosplit -scenario [all_active_scenarios] -capacitance -transition_time -input_pins -nets -delay min > rpts/pre_opt_cts/hold_viols.rpt
+
+report_qor -summary > rpts/pre_opt_cts/QOR.rpt
+
+report_placement_utilization -verbose > rpts/pre_opt_cts/utilization.rpt
+
+current_scenario func_best
+report_timing -delay_type min -max_paths 10000 -slack_lesser_than 0 -nworst 10 > rpts/pre_opt_cts/func_best_hold_viols.rpt

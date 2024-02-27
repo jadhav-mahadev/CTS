@@ -1,0 +1,140 @@
+set_app_var mv_continue_on_opcond_mismatch true
+
+set ICC_CTS_RULE_NAME CTS_NDR_NEW4
+
+set ICC_CTS_SHIELD_RULE_NAME CTS_SHIELD_NDR_NEW4
+
+source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_optimization_settings_icc.tcl
+source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_placement_settings_icc.tcl
+#source -echo /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_cts_settings_icc.tcl
+
+set_app_var cts_instance_name_prefix CTS
+
+remove_scenario -all
+create_scenario func_worst
+
+read_sdc /project/IC_Compiler_2013.03/ref/design_data/ORCA_TOP_func_worst.sdc
+set_tlu_plus_files \
+        -max_tluplus $TLUPLUS_MAX_FILE \
+        -tech2itf_map $MAP_FILE
+
+set_timing_derate -late 1.05
+
+set_scenario_options -setup true -hold false -leakage_power false
+set_operating_conditions ss0p95vn40c -analysis_type on_chip_variation
+
+create_scenario test_worst
+
+read_sdc /project/IC_Compiler_2013.03/ref/design_data/ORCA_TOP_test_worst2_mod.sdc
+set_tlu_plus_files \
+	-max_tluplus $TLUPLUS_MAX_FILE \
+	-tech2itf_map $MAP_FILE
+
+set_timing_derate -late 1.05
+set_scenario_options -setup true -hold false -leakage_power false
+set_operating_conditions ss0p75vn40c -analysis_type on_chip_variation
+
+
+set cur_scenario [current_scenario]
+current_scenario [lindex [get_scenarios -cts_mode true] 0]
+current_scenario [lindex [get_scenarios -cts_mode true] 1]
+current_scenario $cur_scenario 
+
+set ICC_CTS_REF_LIST "NBUFFX2_LVT NBUFFX4_LVT NBUFFX8_LVT INVX2_LVT INVX4_LVT INVX8_LVT"
+
+if {$ICC_CTS_REF_LIST != "" || $ICC_CTS_REF_SIZING_ONLY != "" || $ICC_CTS_REF_DEL_INS_ONLY != ""} {reset_clock_tree_references}
+if {$ICC_CTS_REF_LIST != ""} {set_clock_tree_references -references $ICC_CTS_REF_LIST}
+if {$ICC_CTS_REF_DEL_INS_ONLY != ""} {set_clock_tree_references -delay_insertion_only -references $ICC_CTS_REF_DEL_INS_ONLY}
+if {$ICC_CTS_REF_SIZING_ONLY != ""} {set_clock_tree_references -sizing_only -references $ICC_CTS_REF_SIZING_ONLY}
+
+
+############
+# CLOCK NDR
+############
+
+set METAL_WIDTH {M3 0.112 M4 0.112 M5 0.112 M6 0.112} 
+set METAL_SPACING {M3 0.056 M4 0.056 M5 0.056 M6 0.056}
+
+if {$ICC_CTS_RULE_NAME == "iccrm_clock_double_spacing"} {
+ redirect -var x {report_routing_rules $ICC_CTS_RULE_NAME}
+  ## Automatically create a double spacing NDR if ICC_CTS_RULE_NAME is set to iccrm_clock_double_spacing
+  if {[regexp "Info: No nondrule" $x]} {
+    define_routing_rule $ICC_CTS_RULE_NAME -default_reference_rule -multiplier_spacing 2 -multiplier_width 2 -widths $METAL_WIDTH -spacings $METAL_SPACING 
+    ## add -multiplier_width 2 for double width
+  } 
+}
+
+set_clock_tree_options -clock_trees [get_clocks *] -target_skew 0.200 -routing_rule $ICC_CTS_RULE_NAME -use_default_routing_for_sinks 1 -buffer_relocation TRUE -gate_sizing TRUE -buffer_sizing TRUE -gate_relocation TRUE -max_transition 0.800 -layer_list {M3 M4 M5 M6}  -max_fanout 30 -target_early_delay 0.500
+
+
+############################
+# CLOCK SHIELDING NDR
+###########################
+## Define clock shielding NDR 
+
+set ICC_CTS_SHIELD_SPACINGS {M3 0.120 M4 0.120 M5 0.120 M6 0.120} 
+set ICC_CTS_SHIELD_WIDTHS {M3 0.065 M4 0.065 M5 0.065 M6 0.065}
+set ICC_CTS_SHIELD_CLK_NAMES {PCI_CLK v_PCI_CLK SYS_2x_CLK SYS_CLK SDRAM_CLK v_SDRAM_CLK SD_DDR_CLK SD_DDR_CLKn ate_clk}
+
+if {$ICC_CTS_SHIELD_RULE_NAME != ""} {
+  redirect -var x {report_routing_rules $ICC_CTS_SHIELD_RULE_NAME}
+  if {[regexp "Info: No nondrule" $x]} {
+    define_routing_rule $ICC_CTS_SHIELD_RULE_NAME \
+    	-default_reference_rule \
+    	-shield_spacings "$ICC_CTS_SHIELD_SPACINGS" \
+    	-shield_widths "$ICC_CTS_SHIELD_WIDTHS"
+    report_routing_rule $ICC_CTS_SHIELD_RULE_NAME
+  }
+  if {![regexp "Info: No nondrule" $x] && $ICC_CTS_SHIELD_CLK_NAMES != ""} {
+    set_clock_tree_options -routing_rule $ICC_CTS_SHIELD_RULE_NAME -clock_trees $ICC_CTS_SHIELD_CLK_NAMES -use_default_routing_for_sinks 1
+  } else {
+    set_clock_tree_options -routing_rule $ICC_CTS_SHIELD_RULE_NAME -use_default_routing_for_sinks 1  ;#apply rule to all except leaf nets
+  }
+}
+
+##Typically route clocks on metal3 and above
+if {$ICC_CTS_LAYER_LIST != ""} {set_clock_tree_options -layer_list $ICC_CTS_LAYER_LIST}
+
+
+
+set clock_opt_cts_cmd "clock_opt -only_cts -no_clock_route"
+
+if {!$DFT && [get_scan_chain] == 0} {lappend clock_opt_cts_cmd -continue_on_missing_scandef}
+if {$ICC_CTS_INTERCLOCK_BALANCING && [file exists [which $ICC_CTS_INTERCLOCK_BALANCING_OPTIONS_FILE]]} {lappend clock_opt_cts_cmd -inter_clock_balance}
+if {$ICC_CTS_UPDATE_LATENCY} {lappend clock_opt_cts_cmd -update_clock_latency}
+if {$ICC_CTS_SELF_GATING} {lappend clock_opt_cts_cmd -insert_self_gating}
+set clock_opt_cts_cmd "clock_opt -only_cts -continue_on_missing_scandef -inter_clock_balance -update_clock_latency"
+echo $clock_opt_cts_cmd
+eval $clock_opt_cts_cmd
+
+
+source /project/pdworkspace/pdlab83_wa/mj_wa/cts_scripts/common_post_cts_timing_settings.tcl
+
+source -e /project/pdworkspace/pdlab83_wa/mj_wa/new_design2/scripts/post_cts_reports.tcl
+
+#catch {sh mkdir rpts/post_cts}
+#post cts reports
+#report_clock_timing -nosplit -type skew > rpts/post_cts/clock_timing_skew.rpt
+#report_clock_timing  -type latency -verbose > rpts/post_cts/clock_timing_latency.rpt
+#report_clock_tree -nosplit -summary > rpts/post_cts/clock_summary.rpt
+#report_clock_tree -structure > rpts/post_cts/clock_structure.rpt
+
+
+
+source /project/pdworkspace/pdlab83_wa/mj_wa/scripts/to_create_scenarios.tcl 
+
+foreach scenario [all_active_scenarios] {
+     #remove_ideal_network [all_fanout -flat -clock_tree]
+	remove_ideal_network -all
+     propagate_all_clocks
+}
+
+
+
+foreach scenario [all_active_scenarios] {
+     current_scenario $scenario
+     #set fix hold 
+     set_fix_hold [all_clocks]
+}
+
+source -e /project/pdworkspace/pdlab83_wa/mj_wa/new_design2/scripts/pre_opt_cts.tcl
